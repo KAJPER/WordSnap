@@ -1,9 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import io
 import re
+import numpy as np
+import cv2
 
 app = FastAPI(title="WordSnap API")
 
@@ -16,9 +18,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Konfiguracja Tesseract
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
 @app.get("/")
 async def root():
     return {"message": "Witaj w API WordSnap. Użyj /upload-photo, aby przesłać zdjęcie."}
+
+def preprocess_image(img):
+    """
+    Przygotowuje obraz do lepszego rozpoznawania tekstu
+    """
+    # Konwersja do OpenCV
+    open_cv_image = np.array(img) 
+    open_cv_image = open_cv_image[:, :, ::-1].copy() # Konwersja RGB do BGR
+    
+    # Konwersja do skali szarości
+    gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
+    
+    # Usunięcie szumu
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Adaptacyjne progowanie
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                  cv2.THRESH_BINARY, 11, 2)
+    
+    # Dylatacja tekstu
+    kernel = np.ones((1, 1), np.uint8)
+    img_dilation = cv2.dilate(thresh, kernel, iterations=1)
+    
+    # Konwersja z powrotem do PIL
+    return Image.fromarray(img_dilation)
 
 @app.post("/upload-photo")
 async def upload_photo(image: UploadFile = File(...)):
@@ -31,8 +61,14 @@ async def upload_photo(image: UploadFile = File(...)):
         contents = await image.read()
         img = Image.open(io.BytesIO(contents))
         
+        # Preprocessing obrazu
+        processed_img = preprocess_image(img)
+        
+        # Konfiguracja Tesseract
+        custom_config = r'--oem 3 --psm 6 -l eng+pol'
+        
         # Wykonanie OCR
-        text = pytesseract.image_to_string(img, lang='pol+eng')
+        text = pytesseract.image_to_string(processed_img, config=custom_config)
         
         # Przetworzenie tekstu na fiszki
         flashcards = parse_text_to_flashcards(text)
